@@ -2,51 +2,226 @@
 #include <stdlib.h>
 #include <pthread.h>
 
-#define THREADS 6
+#define resta_estoque (materia_deposito || materia_fabrica)
+#define canetas_disponiveis (canetas_enviadas || canetas_deposito || canetas_recebidas)
 
-// argumentos de entrada
-int materia_prima_existente;
-int materia_prima_enviada;
-int tempo_envio_materia;
-int tempo_fabrica_caneta;
-int max_caneta_armazenada;
-int canetas_compra;
-int tempo_espera_compra;
+// entrada
+int estoque_materia_prima = 10;
+int tempo_materia_entrega = 1;
+int tempo_fabricacao_caneta = 1;
+int tempo_solicitacao_comprador = 6;
+int canetas_compradadas_por_solicitacao = 3;
+int capacidade_deposito_canetas = 3;
+int materia_enviada_iteracao = 1;
 
-// variaveis universais para comunicação entre threads
-int materia_prima_deposito;
-int materia_prima_fabrica;
-int caneta_deposito;
-int caneta_enviada;
+// buffers
+int materia_deposito;
+int materia_fabrica = 0;
+int canetas_deposito = 0;
+int canetas_solicitadas = 0;
+int canetas_enviadas = 0;
+int canetas_recebidas = -1;
+int qnt_disponivel = 0;
+
+// semaforo
+int controle_bloqueia = 0;
 
 // mutexes
-pthread_mutex_t mutex_materia_deposito;
-pthread_mutex_t mutex_materia_fabrica;
-pthread_mutex_t mutex_caneta_deposito;
-pthread_mutex_t mutex_caneta_enviada;
+pthread_mutex_t mutex_materia_deposito = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_materia_fabrica = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_canetas_deposito = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_canetas_recebidas = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_canetas_enviadas = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_qnt_disponivel = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_canetas_solicitadas = PTHREAD_MUTEX_INITIALIZER;
 
-// variaveis de condicao
-pthread_cond_t materia_deposito_vazio, materia_deposito_cheio;
-pthread_cond_t materia_fabrica_vazio, materia_fabrica_cheio; // se nao tiver limite nao precisa
-pthread_cond_t caneta_deposito_vazio, caneta_deposito_cheio;
+pthread_mutex_t mutex_controle_bloqueia = PTHREAD_MUTEX_INITIALIZER;
 
-// funções responsaveis pelo gestao das threads
-void criador();
-void deposito_materia();
-void fabrica_caneta();
-void controle();
-void deposito_caneta();
-void comprador();
+// var cond
+pthread_cond_t deposito_canetas_cheio = PTHREAD_COND_INITIALIZER;
 
-int main(void){
+void* deposito_materia() {
+    time_t tempo_inicial = time(NULL);
 
+    while(materia_deposito) {
+
+        if((int) (time(NULL) - tempo_inicial) >= tempo_materia_entrega) {
+        
+            pthread_mutex_lock(&mutex_controle_bloqueia);
+            while(controle_bloqueia != 0)
+                pthread_cond_wait(&deposito_canetas_cheio, &mutex_controle_bloqueia);
+            pthread_mutex_unlock(&mutex_controle_bloqueia);
+
+            pthread_mutex_lock(&mutex_materia_deposito);
+            pthread_mutex_lock(&mutex_materia_fabrica);
+
+            materia_deposito -= materia_enviada_iteracao;
+            materia_fabrica += materia_enviada_iteracao;
+
+            pthread_mutex_unlock(&mutex_materia_fabrica);
+            pthread_mutex_unlock(&mutex_materia_deposito);
+
+            tempo_inicial = time(NULL);
+        }
+    }
+
+    pthread_exit(NULL);
+}
+
+void *fabrica_canetas() {
+    time_t tempo_inicial;
+
+    while(1) {
+        pthread_mutex_lock(&mutex_materia_fabrica);
+        int materia_local = materia_fabrica;
+        pthread_mutex_unlock(&mutex_materia_fabrica);
+
+        if(materia_local) {
+
+            tempo_inicial = time(NULL);
+            while(time(NULL) - tempo_inicial < tempo_fabricacao_caneta);
+
+            pthread_mutex_lock(&mutex_controle_bloqueia);
+            while(controle_bloqueia != 0)
+                pthread_cond_wait(&deposito_canetas_cheio, &mutex_controle_bloqueia);
+            pthread_mutex_unlock(&mutex_controle_bloqueia);
+
+
+            pthread_mutex_lock(&mutex_canetas_deposito);
+            pthread_mutex_lock(&mutex_materia_fabrica);
+
+            materia_fabrica--;
+            canetas_deposito++;
+
+            pthread_mutex_unlock(&mutex_materia_fabrica);
+            pthread_mutex_unlock(&mutex_canetas_deposito);
+        }
+    }
+
+    pthread_exit(NULL);
+}
+
+void *deposito_canetas() {
+    
+    while(1) {
+
+        pthread_mutex_lock(&mutex_canetas_solicitadas);
+        if(canetas_solicitadas != 0){
+            pthread_mutex_lock(&mutex_canetas_deposito);
+            pthread_mutex_lock(&mutex_canetas_enviadas);
+
+            if(canetas_deposito >= canetas_solicitadas)
+                canetas_enviadas = canetas_solicitadas;
+            else
+                canetas_enviadas = canetas_deposito;
+            
+            canetas_deposito -= canetas_enviadas;
+
+            canetas_solicitadas = 0;
+            pthread_mutex_unlock(&mutex_canetas_enviadas);
+            pthread_mutex_unlock(&mutex_canetas_deposito);
+        }
+        pthread_mutex_unlock(&mutex_canetas_solicitadas);
+
+
+        pthread_mutex_lock(&mutex_qnt_disponivel);
+        pthread_mutex_lock(&mutex_canetas_deposito);
+        
+        qnt_disponivel = capacidade_deposito_canetas - canetas_deposito;
+
+        pthread_mutex_unlock(&mutex_canetas_deposito);
+        pthread_mutex_unlock(&mutex_qnt_disponivel);
+    }
+
+    pthread_exit(NULL);
+}
+
+void *comprador() {
+    time_t tempo_inicial;
+
+    while(1){
+
+        pthread_mutex_lock(&mutex_canetas_solicitadas);
+        canetas_solicitadas = canetas_compradadas_por_solicitacao;
+        pthread_mutex_unlock(&mutex_canetas_solicitadas);
+
+        tempo_inicial = time(NULL);
+        while(time(NULL) - tempo_inicial < tempo_fabricacao_caneta);
+
+        pthread_mutex_lock(&mutex_canetas_recebidas);
+        pthread_mutex_lock(&mutex_canetas_enviadas);
+
+        canetas_recebidas = canetas_enviadas;
+        canetas_enviadas = 0;
+        
+        pthread_mutex_unlock(&mutex_canetas_enviadas);
+        pthread_mutex_unlock(&mutex_canetas_recebidas);
+    }
+
+}
+
+void *controle() {
+    while(1){   
+
+        while(qnt_disponivel == 0)
+            controle_bloqueia = 1;
+
+        pthread_cond_broadcast(&deposito_canetas_cheio);
+
+        controle_bloqueia = 0;
+    }
+}
+
+int criador() {
+
+    materia_deposito = estoque_materia_prima;
     // criação das threads
-    pthread_t t_criador;
     pthread_t t_deposito_materia;
     pthread_t t_fabrica_caneta;
     pthread_t t_controle;
     pthread_t t_deposito_caneta;
     pthread_t t_comprador;
 
-    exit(0);
+    if (pthread_create(&t_deposito_materia, NULL, (void*) deposito_materia, NULL) != 0){
+        printf("Erro ao criar Thread! \n");
+        return 1;
+    }
+
+    if (pthread_create(&t_fabrica_caneta, NULL, (void*) fabrica_canetas, NULL) != 0){
+        printf("Erro ao criar Thread! \n");
+        return 1;
+    }
+
+    if (pthread_create(&t_controle, NULL, (void*) controle, NULL) != 0){
+        printf("Erro ao criar Thread! \n");
+        return 1;
+    }
+
+    if (pthread_create(&t_deposito_caneta, NULL, (void*) deposito_canetas, NULL) != 0){
+        printf("Erro ao criar Thread! \n");
+        return 1;
+    }
+
+    if (pthread_create(&t_comprador, NULL, (void*) comprador, NULL) != 0){
+        printf("Erro ao criar Thread! \n");
+        return 1;
+    }
+
+    while(resta_estoque || canetas_disponiveis){
+        pthread_mutex_lock(&mutex_canetas_recebidas);
+        if(canetas_recebidas != -1){
+            printf("Canetas Compradas %d \n", canetas_recebidas);
+            canetas_recebidas = -1;
+        }
+        pthread_mutex_unlock(&mutex_canetas_recebidas);
+    }
+
+    return 0;
+}
+
+int main(void) {
+    
+    criador();
+
+    return 0;
 }
