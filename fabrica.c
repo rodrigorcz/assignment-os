@@ -98,6 +98,17 @@ void *deposito_canetas(void *thread_args) {
 
 void *controle(void *thread_args) {
     // TODO: controla controla
+    /*recebe a informação de quantidades de slots disponíveis
+    se a quantidade disponível for zero, trava a os outros dois ranks?????*/
+    while(materia_deposito || materia_fabrica){
+        pthread_mutex_lock(&mutex_espacos_disponiveis);
+
+        if(espacos_disponiveis == 0){
+            pthread_cond_wait(&deposito_canetas_cheio, &mutex_espacos_disponiveis);
+        }
+        pthread_mutex_unlock(&mutex_espacos_disponiveis);
+    }
+    //Código altamente sucetível a erros aqui!!
 }
 
 void *comprador(void *thread_args) {
