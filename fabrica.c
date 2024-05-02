@@ -1,4 +1,3 @@
-        // printf("%d %d %d\n", materia_deposito, materia_fabrica, canetas_deposito);
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
